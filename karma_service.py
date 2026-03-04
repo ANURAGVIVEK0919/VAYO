@@ -24,20 +24,18 @@ def get_user_tier(karma_points: int) -> str:
     """
     Determines tier based on karma points
     """
-
+    if karma_points >= 1000:
+        return "Conqueror"
     if karma_points >= 500:
-        return "Elite Member"
-
-    if karma_points >= 300:
-        return "Influencer"
-
-    if karma_points >= 150:
-        return "Contributor"
-
-    if karma_points >= 50:
         return "Explorer"
 
-    return "Beginner"
+    if karma_points >= 300:
+        return "Pathfinder"
+
+    if karma_points >= 100:
+        return "Beginner"
+
+    return "None"
 
 
 
