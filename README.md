@@ -83,6 +83,88 @@ CREATE TABLE users (
 -- Indexes for performance
 CREATE INDEX idx_communities_location ON communities(city, timezone);
 CREATE INDEX idx_activity_recent ON community_activity(community_id, created_at);
+-- for karama points
+we have `users` table in our system.
+
+Just add **karma fields**.
+
+```
+ALTERTABLE users
+ADDCOLUMN karma_pointsINTEGERDEFAULT0,
+ADDCOLUMN tier_level TEXTDEFAULT'Beginner';
+```
+
+---
+
+# Karma Transactions Table (VERY IMPORTANT)
+
+ table records **how points were earned**.
+
+```
+CREATETABLE karma_transactions (
+    id SERIALPRIMARYKEY,
+    user_id TEXTNOTNULL,
+    action_type TEXTNOTNULL,
+    pointsINTEGERNOTNULL,
+    event_id TEXT,
+    created_atTIMESTAMPDEFAULT NOW()
+);
+```
+
+---
+
+# Events Table
+
+Stores meetups / activities.
+
+```
+CREATETABLE events (
+    event_id TEXTPRIMARYKEY,
+    title TEXTNOTNULL,
+    description TEXT,
+    host_id TEXT,
+    min_karma_requiredINTEGERDEFAULT0,
+    entry_feeINTEGERDEFAULT0,
+    max_participantsINTEGER,
+    event_dateTIMESTAMP,
+    created_atTIMESTAMPDEFAULT NOW()
+);
+```
+
+---
+
+# Event Participants Table
+
+Tracks **who joined events**.
+
+```
+CREATETABLE event_participants (
+    id SERIALPRIMARYKEY,
+    user_id TEXTNOTNULL,
+    event_id TEXTNOTNULL,
+    payment_status TEXTDEFAULT'pending',
+    attendance_statusBOOLEANDEFAULTFALSE,
+    joined_atTIMESTAMPDEFAULT NOW()
+);
+```
+
+---
+
+# Event Ratings Table
+
+Used to give karma to hosts.
+
+```
+CREATETABLE event_ratings (
+    id SERIALPRIMARYKEY,
+    event_id TEXT,
+    user_id TEXT,
+    ratingINTEGER,
+    created_atTIMESTAMPDEFAULT NOW()
+);
+```
+
+---
 ```
 
 ### 3. Start Services
@@ -227,3 +309,4 @@ matching_system/
 ## 📄 License
 
 MIT License
+
