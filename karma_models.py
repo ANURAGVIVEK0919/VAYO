@@ -1,35 +1,41 @@
 """
-Karma Points System — Pydantic Models & Enums
+Karma Module
+Contains:
+- Pydantic Models & Enums
+- Tier Calculation
+- Service Functions (add_karma, get_user_karma, etc.)
 """
+
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
+from .database import db_manager
+
 
 
 class KarmaActionType(str, Enum):
-    """Mirrors karma_action_type_enum in karma_migration.sql."""
-    SIGNUP_EMAIL_VERIFY   = "SIGNUP_EMAIL_VERIFY"
-    SIGNUP_PROFILE_PHOTO  = "SIGNUP_PROFILE_PHOTO"
-    SIGNUP_VIBE_QUESTIONS = "SIGNUP_VIBE_QUESTIONS"
-    SIGNUP_CLAIM_ID       = "SIGNUP_CLAIM_ID"
-    EVENT_RSVP            = "EVENT_RSVP"
-    GPS_CHECKIN           = "GPS_CHECKIN"
-    EVENT_PHOTO_POST      = "EVENT_PHOTO_POST"
-    PEER_ENDORSEMENT      = "PEER_ENDORSEMENT"
-    HOST_EVENT            = "HOST_EVENT"
-    NO_SHOW_PENALTY           = "NO_SHOW_PENALTY"
-    HOST_CANCEL_PENALTY       = "HOST_CANCEL_PENALTY"
-    NEGATIVE_REVIEW_PENALTY   = "NEGATIVE_REVIEW_PENALTY"
-    ADMIN_ADJUSTMENT      = "ADMIN_ADJUSTMENT"
+    SIGNUP_EMAIL_VERIFY     = "SIGNUP_EMAIL_VERIFY"
+    SIGNUP_PROFILE_PHOTO    = "SIGNUP_PROFILE_PHOTO"
+    SIGNUP_VIBE_QUESTIONS   = "SIGNUP_VIBE_QUESTIONS"
+    SIGNUP_CLAIM_ID         = "SIGNUP_CLAIM_ID"
+    EVENT_RSVP              = "EVENT_RSVP"
+    GPS_CHECKIN             = "GPS_CHECKIN"
+    EVENT_PHOTO_POST        = "EVENT_PHOTO_POST"
+    PEER_ENDORSEMENT        = "PEER_ENDORSEMENT"
+    HOST_EVENT              = "HOST_EVENT"
+    NO_SHOW_PENALTY         = "NO_SHOW_PENALTY"
+    HOST_CANCEL_PENALTY     = "HOST_CANCEL_PENALTY"
+    NEGATIVE_REVIEW_PENALTY = "NEGATIVE_REVIEW_PENALTY"
+    ADMIN_ADJUSTMENT        = "ADMIN_ADJUSTMENT"
 
 
 class KarmaTier(str, Enum):
-    """Credibility tiers — thresholds defined in compute_tier()."""
     BEGINNER   = "beginner"
     PATHFINDER = "pathfinder"
     EXPLORER   = "explorer"
     CONQUEROR  = "conqueror"
+
 
 
 TIER_CONFIG = {
@@ -38,6 +44,7 @@ TIER_CONFIG = {
     KarmaTier.EXPLORER:   {"label": "Explorer",   "min": 500,  "max": 999,  "level": 3},
     KarmaTier.CONQUEROR:  {"label": "Conqueror",  "min": 1000, "max": None, "level": 4},
 }
+
 
 
 def compute_tier(score: int) -> Optional[KarmaTier]:
@@ -143,3 +150,119 @@ class MessageEligibilityResponse(BaseModel):
     sender_score: int
     target_score: int
     target_inbox_shield: int
+
+
+
+async def add_karma(user_id: str, action_type: str, event_id: str = None):
+    """
+    Add or deduct karma for a user.
+    Raises ValueError if user does not exist.
+    """
+
+    user_row = await db_manager.pg_pool.fetchrow(
+        "SELECT user_id FROM users WHERE user_id = $1",
+        user_id
+    )
+    if user_row is None:
+        raise ValueError(
+            f"User '{user_id}' not found in users table. "
+            f"Insert the user before adding karma."
+        )
+
+
+    karma_rules = {
+        "SIGNUP_EMAIL_VERIFY":     10,
+        "SIGNUP_PROFILE_PHOTO":    10,
+        "SIGNUP_VIBE_QUESTIONS":   20,
+        "SIGNUP_CLAIM_ID":         10,
+        "EVENT_RSVP":              10,
+        "GPS_CHECKIN":             20,
+        "EVENT_PHOTO_POST":        15,
+        "PEER_ENDORSEMENT":        25,
+        "HOST_EVENT":              50,
+        "NO_SHOW_PENALTY":        -20,
+        "HOST_CANCEL_PENALTY":    -30,
+        "NEGATIVE_REVIEW_PENALTY": -15,
+    }
+
+    action_key = action_type.upper() if isinstance(action_type, str) else action_type
+    points = karma_rules.get(action_key, 0)
+
+    if points == 0:
+        return
+
+    await db_manager.pg_pool.execute(
+        """
+        INSERT INTO karma_transactions (user_id, action_type, points, event_id)
+        VALUES ($1, $2, $3, $4)
+        """,
+        user_id,
+        action_key,
+        points,
+        event_id
+    )
+
+    await db_manager.pg_pool.execute(
+        """
+        UPDATE users
+        SET karma_points = GREATEST(0, karma_points + $1)
+        WHERE user_id = $2
+        """,
+        points,
+        user_id
+    )
+
+   
+    row = await db_manager.pg_pool.fetchrow(
+        "SELECT karma_points FROM users WHERE user_id = $1",
+        user_id
+    )
+    tier = compute_tier(row["karma_points"])
+
+    await db_manager.pg_pool.execute(
+        """
+        UPDATE users
+        SET tier_level = $1
+        WHERE user_id = $2
+        """,
+        tier.value if tier else None,
+        user_id
+    )
+
+
+async def get_user_karma(user_id: str) -> int:
+    """
+    Get total karma points of a user.
+    Returns 0 if user not found.
+    """
+    row = await db_manager.pg_pool.fetchrow(
+        "SELECT karma_points FROM users WHERE user_id = $1",
+        user_id
+    )
+    if row:
+        return row["karma_points"]
+    return 0
+
+
+async def get_karma_history(user_id: str) -> List[Dict]:
+    """
+    Returns user's karma transaction history.
+    """
+    rows = await db_manager.pg_pool.fetch(
+        """
+        SELECT id, action_type, points, event_id, created_at
+        FROM karma_transactions
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        """,
+        user_id
+    )
+    return [dict(r) for r in rows]
+
+
+async def has_required_karma(user_id: str, required_karma: int) -> bool:
+    """
+    Check if user has enough karma for an event.
+    """
+    karma = await get_user_karma(user_id)
+    return karma >= required_karma
