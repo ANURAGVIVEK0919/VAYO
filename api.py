@@ -1,7 +1,6 @@
 """
-FastAPI Endpoints for Community Matching System
+FastAPI Endpoints - Production Hybrid Matching System
 """
-
 import os
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -17,8 +16,14 @@ from .models import (
     MatchResult,
 )
 from .database import db_manager
+from matching_system.karma_router import router as karma_router
+from matching_system.events_router import router as events_router
+
+
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -41,6 +46,11 @@ app = FastAPI(
 )
 
 
+app.include_router(karma_router)
+app.include_router(events_router)
+
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,7 +58,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.post(
     "/api/v1/match",
@@ -63,7 +72,7 @@ async def initiate_match(profile: UserProfileInput):
 
     task = process_match_task.apply_async(
         kwargs={"user_data": profile.dict()},
-        expires=60, 
+        expires=60,
     )
 
     return TaskStatusResponse(
@@ -84,13 +93,11 @@ async def get_match_result(task_id: str):
 
     task_result = AsyncResult(task_id, app=celery_app)
 
-
     if task_result.state in ["PENDING", "STARTED"]:
         return {
             "task_id": task_id,
             "status": "processing"
         }
-
 
     if task_result.state == "FAILURE":
         return {
@@ -99,14 +106,9 @@ async def get_match_result(task_id: str):
             "error": str(task_result.info)
         }
 
-
     if task_result.state == "SUCCESS":
-
-   
         if isinstance(task_result.result, dict):
             return task_result.result
-
-
         try:
             return MatchResult(**task_result.result)
         except Exception:
@@ -117,6 +119,8 @@ async def get_match_result(task_id: str):
         "status": task_result.state.lower()
     }
 
+
+
 @app.get("/api/v1/health")
 async def health_check():
     return {
@@ -126,10 +130,7 @@ async def health_check():
         "redis": "connected"
     }
 
-
 @app.get("/api/v1/popular-communities")
 async def get_popular_communities(limit: int = 10):
     communities = await db_manager.get_popular_communities(limit=limit)
     return {"communities": communities}
-
-
