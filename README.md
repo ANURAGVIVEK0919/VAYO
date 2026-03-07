@@ -1,8 +1,8 @@
 # AI-Powered Community Matching System v2.0
 
-Intelligent onboarding solution with **<2 second** community matching using hybrid algorithms.
+Intelligent onboarding solution with **<2 second** community matching using hybrid algorithms, a **reputation-based karma system**, and **real-time WebSocket** delivery.
 
-## 🏗️ Architecture
+## Architecture
 
 ### Tech Stack
 - **API**: Python FastAPI (async, Pydantic validation)
@@ -10,6 +10,7 @@ Intelligent onboarding solution with **<2 second** community matching using hybr
 - **Database**: PostgreSQL 16 (user data) + Pinecone (vectors)
 - **AI/ML**: OpenAI GPT-4o-mini + text-embedding-3-small
 - **Real-time**: WebSocket (Socket.io) + Redis Pub/Sub
+- **Auth**: Clerk JWT (RS256, JWKS auto-rotation)
 
 ### Matching Pipeline (5 Phases)
 
@@ -25,7 +26,78 @@ graph LR
     F -->|<0.55| I[Fallback<br/>Popular + Update Request]
 ```
 
-## 🚀 Quick Start
+---
+
+## Karma Points System
+
+A reputation-based progression model that governs credibility, access, and interaction quality. Karma is non-consumable, earned through real activity, and required for feature access.
+
+### Tier Architecture
+
+| Level | Tier | Karma Range | Key Unlocks |
+|-------|------|-------------|-------------|
+| 1 | Beginner | 100 - 299 | DM peers, RSVP to events, Claim Vayo ID |
+| 2 | Pathfinder | 300 - 499 | Private group chats |
+| 3 | Explorer | 500 - 999 | Host public events, Advanced networking tools |
+| 4 | Conqueror | 1000+ | Premium UI (glowing avatar), Custom Vayo ID colors, Algo boost |
+
+### Phase 1 -- Onboarding Boost (0 to 100 Points)
+
+Completing full onboarding yields exactly 100 karma points, placing the user into Beginner tier immediately.
+
+| Action | Points | Frequency |
+|--------|--------|-----------|
+| Verify email or phone | +20 | Once |
+| Upload profile picture | +30 | Once |
+| Complete 3 Core Vibe questions | +30 | Once |
+| Claim unique Vayo ID | +20 | Once |
+
+### Phase 2 -- Engagement Loop (100 to 500+ Points)
+
+Post-onboarding karma is tied to real-world event participation. Growth intentionally tapers at higher stages.
+
+| Action | Points | Cap |
+|--------|--------|-----|
+| RSVP to a public event | +10 | Max 3 RSVPs/day |
+| GPS check-in at event | +25 | Max 1/event |
+| Post photo/update to event feed | +15 | Max 2/event |
+| Verified Vibe peer endorsement | +20 | No daily cap |
+| Host a community event | TBD | Per event |
+
+### Communication Rules
+
+- **Outbound Rule** -- A user can only initiate DMs with accounts holding equal or lower karma. Prevents cold-messaging by zero-point accounts.
+- **Inbox Shield** -- Users set a minimum karma threshold for inbound DMs, giving granular control over who can contact them.
+- **Chat Tier Range** -- Group chat participation limited to same tier or +/-1 tier level.
+
+### Karma API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/karma/award` | Append a karma ledger entry, returns updated profile |
+| `GET` | `/api/v1/users/{user_id}/karma` | Get score, tier, and optional paginated ledger history |
+| `PATCH` | `/api/v1/users/{user_id}/inbox-shield` | Set inbox shield threshold (self-only) |
+| `GET` | `/api/v1/users/{user_id}/karma/can-message/{target_user_id}` | Check outbound DM eligibility |
+
+### Karma Data Architecture
+
+The system uses an **append-only `karma_ledger`** table. Every point transaction is an immutable row providing a full audit trail. A PostgreSQL trigger keeps a denormalized `karma_score` column on the `users` table in sync for O(1) read performance.
+
+```sql
+-- Ledger structure (simplified)
+CREATE TABLE karma_ledger (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     TEXT NOT NULL REFERENCES users(user_id),
+    point_delta INTEGER NOT NULL,        -- +20 or -10
+    action_type karma_action_type_enum,  -- SIGNUP_EMAIL_VERIFY, EVENT_RSVP, etc.
+    reference_id TEXT,                   -- optional event_id or endorsement_id
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## Quick Start
 
 ### 1. Installation
 
@@ -44,112 +116,21 @@ cp .env.example .env
 
 ### 2. Database Setup
 
-```sql
--- PostgreSQL schema
-CREATE TABLE communities (
-    community_id TEXT PRIMARY KEY,
-    community_name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    city TEXT NOT NULL,
-    timezone TEXT NOT NULL,
-    member_count INTEGER DEFAULT 0,
-    description TEXT,
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP DEFAULT NOW()
-);
+```bash
+# Create database
+psql -c "CREATE DATABASE community_matching;"
 
-CREATE TABLE community_members (
-    user_id TEXT NOT NULL,
-    community_id TEXT NOT NULL,
-    joined_at TIMESTAMP DEFAULT NOW(),
-    auto_joined BOOLEAN DEFAULT false,
-    PRIMARY KEY (user_id, community_id)
-);
+# Run base schema
+psql -d community_matching -f matching_system/setup_database.sql
 
-CREATE TABLE community_activity (
-    message_id TEXT PRIMARY KEY,
-    community_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
-);
+# Run Clerk integration migration
+psql -d community_matching -f matching_system/clerk_migration.sql
 
-CREATE TABLE users (
-    user_id TEXT PRIMARY KEY,
-    username TEXT NOT NULL,
-    bio TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
+# Run user preferences migration
+psql -d community_matching -f matching_system/user_preferences_migration.sql
 
--- Indexes for performance
-CREATE INDEX idx_communities_location ON communities(city, timezone);
-CREATE INDEX idx_activity_recent ON community_activity(community_id, created_at);
--- for karama points
-we have `users` table in our system.
-
-Just add **karma fields**.
-
-ALTERTABLE users
-ADDCOLUMN karma_pointsINTEGERDEFAULT0,
-ADDCOLUMN tier_level TEXTDEFAULT'Beginner';
-
-# Karma Transactions Table (VERY IMPORTANT)
-
- table records **how points were earned**.
-
-CREATETABLE karma_transactions (
-    id SERIALPRIMARYKEY,
-    user_id TEXTNOTNULL,
-    action_type TEXTNOTNULL,
-    pointsINTEGERNOTNULL,
-    event_id TEXT,
-    created_atTIMESTAMPDEFAULT NOW()
-);
-
-
-# Events Table
-
-Stores meetups / activities.
-
-CREATETABLE events (
-    event_id TEXTPRIMARYKEY,
-    title TEXTNOTNULL,
-    description TEXT,
-    host_id TEXT,
-    min_karma_requiredINTEGERDEFAULT0,
-    entry_feeINTEGERDEFAULT0,
-    max_participantsINTEGER,
-    event_dateTIMESTAMP,
-    created_atTIMESTAMPDEFAULT NOW()
-);
-
-# Event Participants Table
-
-Tracks **who joined events**.
-
-CREATETABLE event_participants (
-    id SERIALPRIMARYKEY,
-    user_id TEXTNOTNULL,
-    event_id TEXTNOTNULL,
-    payment_status TEXTDEFAULT'pending',
-    attendance_statusBOOLEANDEFAULTFALSE,
-    joined_atTIMESTAMPDEFAULT NOW()
-);
-
-# Event Ratings Table
-
-Used to give karma to hosts.
-
-
-CREATETABLE event_ratings (
-    id SERIALPRIMARYKEY,
-    event_id TEXT,
-    user_id TEXT,
-    ratingINTEGER,
-    created_atTIMESTAMPDEFAULT NOW()
-);
-```
-
----
+# Run karma points migration
+psql -d community_matching -f matching_system/karma_migration.sql
 ```
 
 ### 3. Start Services
@@ -166,6 +147,15 @@ redis-server
 ```
 
 ### 4. Test API
+
+**Option 1: Interactive WebSocket Demo (Recommended)**
+```
+Open in browser: http://localhost:8000/static/websocket_demo.html
+```
+- Real-time WebSocket connection
+- Live match result updates
+
+**Option 2: REST API + Polling**
 
 ```bash
 # POST request to initiate matching
@@ -191,7 +181,19 @@ curl -X POST http://localhost:8000/api/v1/match \
 curl http://localhost:8000/api/v1/match/abc-123-def
 ```
 
-## 🧠 Hybrid Matching Algorithm
+**Option 3: Karma System Tests**
+
+```bash
+# Unit tests (no server required)
+python -m matching_system.test_karma
+
+# Integration tests (requires running server + database)
+python -m matching_system.test_karma --live
+```
+
+---
+
+## Hybrid Matching Algorithm
 
 ### Phase A: Location Filter (SQL)
 ```python
@@ -212,7 +214,7 @@ if all_same_category(top_3):
     inject_diverse_match()
 ```
 
-## 📊 Decision Engine Thresholds
+## Decision Engine Thresholds
 
 | Tier | Threshold | Action |
 |------|-----------|--------|
@@ -220,7 +222,7 @@ if all_same_category(top_3):
 | **Explorer** | 0.55-0.87 | Show 3-5 match options with scores |
 | **Fallback** | <0.55 | Show popular communities + request profile update |
 
-## 🎯 AI Introduction Generator
+## AI Introduction Generator
 
 Triggered on **Soulmate** matches:
 
@@ -230,7 +232,7 @@ Triggered on **Soulmate** matches:
 4. Run toxicity check (block if score >0.75)
 5. Post to community channel with @mention
 
-## 💾 Caching Strategy
+## Caching Strategy
 
 | Layer | Data | TTL | Storage |
 |-------|------|-----|---------|
@@ -239,15 +241,15 @@ Triggered on **Soulmate** matches:
 | L3 (Redis) | Group vectors | 24h | Redis pickle |
 | L4 (PostgreSQL) | Query results | 15min | Redis JSON |
 
-## 📈 Performance Targets
+## Performance Targets
 
-- ✅ Task ID response: **<50ms**
-- ✅ Total matching: **<2000ms**
-- ✅ Vector embedding: **~300ms**
-- ✅ Pinecone search: **~100ms**
-- ✅ SQL filter: **~50ms**
+- Task ID response: **<50ms**
+- Total matching: **<2000ms**
+- Vector embedding: **~300ms**
+- Pinecone search: **~100ms**
+- SQL filter: **~50ms**
 
-## 🔧 Configuration
+## Configuration
 
 Edit `.env` file:
 
@@ -262,21 +264,48 @@ REDIS_HOST=localhost
 API_PORT=8000
 ```
 
-## 📝 Code Structure
+## Code Structure
 
 ```
 matching_system/
-├── api.py              # FastAPI endpoints
-├── celery_tasks.py     # process_match_task (main logic)
-├── models.py           # Pydantic schemas
-├── database.py         # PostgreSQL + Pinecone
-├── ai_services.py      # OpenAI integration
-├── cache.py            # Redis caching
-├── requirements.txt    # Dependencies
-└── .env.example        # Config template
+├── api.py                    # FastAPI endpoints + router registration
+├── karma.py                  # Karma points API routes
+├── karma_models.py           # Karma enums, tier logic, Pydantic schemas
+├── karma_migration.sql       # Karma ledger table + trigger migration
+├── websocket_server.py       # WebSocket + Redis Pub/Sub
+├── celery_tasks.py           # process_match_task (main logic)
+├── models.py                 # Matching system Pydantic schemas
+├── database.py               # PostgreSQL + Pinecone + Karma DB methods
+├── ai_services.py            # OpenAI integration
+├── cache.py                  # Redis caching
+├── dependencies.py           # Clerk JWT auth dependency
+├── preferences.py            # User onboarding preferences
+├── webhooks.py               # Clerk webhook handlers
+├── test_karma.py             # Karma unit + integration tests
+├── test_example.py           # Matching system tests
+├── test_websocket_client.py  # WebSocket tests
+├── setup_database.sql        # Base schema
+├── clerk_migration.sql       # Clerk auth migration
+├── user_preferences_migration.sql  # Preferences migration
+├── static/
+│   └── websocket_demo.html   # Interactive demo
+├── requirements.txt          # Dependencies
+├── WEBSOCKET_GUIDE.md        # WebSocket documentation
+└── .env.example              # Config template
 ```
 
-## 🐛 Troubleshooting
+## Database Migrations (Run Order)
+
+Migrations must be run in order. Each is idempotent and wrapped in a transaction.
+
+| Order | File | What It Does |
+|-------|------|--------------|
+| 1 | `setup_database.sql` | Base tables: users, communities, community_members, community_activity |
+| 2 | `clerk_migration.sql` | Add Clerk auth columns (email, first_name, last_name, etc.) to users |
+| 3 | `user_preferences_migration.sql` | user_preferences table with ENUM types for onboarding |
+| 4 | `karma_migration.sql` | karma_ledger table, action ENUM, trigger for denormalized score, inbox shield |
+
+## Troubleshooting
 
 ### Task timeout
 - Increase `task_time_limit` in `celery_tasks.py`
@@ -291,8 +320,11 @@ matching_system/
 - Review toxicity threshold (currently 0.75)
 - Check OpenAI moderation API response
 
-## 📄 License
+### Karma not updating
+- Verify the migration was run: `\d karma_ledger` in psql
+- Check that the trigger exists: `SELECT tgname FROM pg_trigger WHERE tgrelid = 'karma_ledger'::regclass;`
+- Ensure the user exists in the `users` table before awarding karma
+
+## License
 
 MIT License
-
-
