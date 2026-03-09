@@ -71,9 +71,28 @@ def process_match_task(user_data: Dict) -> Dict:
             enriched_tags,
         )
 
-        user_vector = ai_service.generate_embedding(embedding_text)
+        
+        user_vector = cache_manager.get_user_vector(user_data["user_id"])
 
-        cache_manager.set_user_vector(user_data["user_id"], user_vector)
+        
+        if user_vector is None:
+            user_vector = db_manager.get_user_vector_from_pinecone(
+                user_data["user_id"]
+            )
+            if user_vector is not None:
+                cache_manager.set_user_vector(
+                    user_data["user_id"], user_vector
+                )
+
+       
+        if user_vector is None:
+            user_vector = ai_service.generate_embedding(embedding_text)
+            cache_manager.set_user_vector(
+                user_data["user_id"], user_vector
+            )
+            db_manager.save_user_vector_to_pinecone(
+                user_data["user_id"], user_vector
+            )
 
         communities = run_async(
             db_manager.filter_communities_by_location(
