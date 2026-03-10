@@ -9,8 +9,8 @@ Endpoints:
 
 from fastapi import APIRouter, HTTPException, status
 from .database import db_manager
-from .karma_module import add_karma, get_user_karma, get_karma_history, has_required_karma
-from .karma_module import (
+from .karma_models import add_karma, get_user_karma, get_karma_history, has_required_karma
+from .karma_models import (
     KarmaAwardRequest,
     KarmaProfileResponse,
     KarmaTier,
@@ -26,6 +26,10 @@ from .karma_module import (
 router = APIRouter(prefix="/api/v1", tags=["Karma"])
 
 
+# -----------------------------------------
+# POST /api/v1/karma/award
+# -----------------------------------------
+
 @router.post(
     "/karma/award",
     status_code=status.HTTP_200_OK,
@@ -38,6 +42,7 @@ async def award_karma(body: KarmaAwardRequest):
     - Negative point_delta for penalties
     """
 
+    # Check user exists
     user_row = await db_manager.pg_pool.fetchrow(
         "SELECT user_id FROM users WHERE user_id = $1",
         body.user_id
@@ -48,9 +53,11 @@ async def award_karma(body: KarmaAwardRequest):
             detail=f"User '{body.user_id}' not found."
         )
 
+    # Insert into karma_ledger
+    # Trigger automatically updates karma_score on users table
     await db_manager.pg_pool.execute(
         """
-        INSERT INTO karma_transactions (user_id, action_type, points, event_id)
+        INSERT INTO karma_ledger (user_id, action_type, point_delta, reference_id)
         VALUES ($1, $2, $3, $4)
         """,
         body.user_id,
@@ -59,25 +66,25 @@ async def award_karma(body: KarmaAwardRequest):
         body.reference_id,
     )
 
-
+    # Enforce karma floor at 0
     await db_manager.pg_pool.execute(
         """
         UPDATE users
-        SET karma_points = GREATEST(0, karma_points + $1)
-        WHERE user_id = $2
+        SET karma_score = GREATEST(0, karma_score)
+        WHERE user_id = $1
         """,
-        body.point_delta,
         body.user_id,
     )
 
+    # Fetch updated score
     row = await db_manager.pg_pool.fetchrow(
-        "SELECT karma_points FROM users WHERE user_id = $1",
+        "SELECT karma_score FROM users WHERE user_id = $1",
         body.user_id
     )
-    new_score = row["karma_points"]
+    new_score = row["karma_score"]
     tier = compute_tier(new_score)
 
-
+    # Update tier_level in users table
     await db_manager.pg_pool.execute(
         """
         UPDATE users
@@ -114,7 +121,7 @@ async def get_karma_profile(user_id: str, include_ledger: bool = True):
 
     row = await db_manager.pg_pool.fetchrow(
         """
-        SELECT karma_points, inbox_shield_threshold
+        SELECT karma_score, inbox_shield_threshold
         FROM users
         WHERE user_id = $1
         """,
@@ -127,13 +134,14 @@ async def get_karma_profile(user_id: str, include_ledger: bool = True):
             detail=f"User '{user_id}' not found."
         )
 
-    score = row["karma_points"]
+    score = row["karma_score"]
     shield = row["inbox_shield_threshold"] or 0
     tier = compute_tier(score)
     tier_label = TIER_CONFIG[tier]["label"] if tier else None
     tier_level = get_tier_level(tier)
     next_threshold = get_next_tier_threshold(score)
 
+    # Fetch ledger if requested
     ledger = None
     if include_ledger:
         history = await get_karma_history(user_id)
@@ -141,8 +149,8 @@ async def get_karma_profile(user_id: str, include_ledger: bool = True):
             KarmaLedgerEntry(
                 id=str(entry.get("id", "")),
                 action_type=entry["action_type"],
-                point_delta=entry["points"],
-                reference_id=entry.get("event_id"),
+                point_delta=entry["point_delta"],
+                reference_id=entry.get("reference_id"),
                 created_at=entry["created_at"],
             )
             for entry in history
@@ -174,8 +182,9 @@ async def can_message(user_id: str, target_user_id: str):
     - Returns allowed=True if sender score >= target threshold
     """
 
+    # Fetch sender karma
     sender_row = await db_manager.pg_pool.fetchrow(
-        "SELECT karma_points FROM users WHERE user_id = $1",
+        "SELECT karma_score FROM users WHERE user_id = $1",
         user_id
     )
     if sender_row is None:
@@ -184,9 +193,9 @@ async def can_message(user_id: str, target_user_id: str):
             detail=f"Sender '{user_id}' not found."
         )
 
-
+    # Fetch target shield
     target_row = await db_manager.pg_pool.fetchrow(
-        "SELECT karma_points, inbox_shield_threshold FROM users WHERE user_id = $1",
+        "SELECT karma_score, inbox_shield_threshold FROM users WHERE user_id = $1",
         target_user_id
     )
     if target_row is None:
@@ -195,8 +204,8 @@ async def can_message(user_id: str, target_user_id: str):
             detail=f"Target user '{target_user_id}' not found."
         )
 
-    sender_score = sender_row["karma_points"]
-    target_score = target_row["karma_points"]
+    sender_score = sender_row["karma_score"]
+    target_score = target_row["karma_score"]
     target_shield = target_row["inbox_shield_threshold"] or 0
 
     allowed = sender_score >= target_shield
@@ -212,7 +221,6 @@ async def can_message(user_id: str, target_user_id: str):
         target_score=target_score,
         target_inbox_shield=target_shield,
     )
-
 
 
 
@@ -237,6 +245,7 @@ async def update_inbox_shield(user_id: str, body: InboxShieldUpdate):
         user_id,
     )
 
+    # asyncpg returns "UPDATE N" — check N > 0
     if result == "UPDATE 0":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
