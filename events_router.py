@@ -17,13 +17,13 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from .database import db_manager
-from .karma_module import add_karma, has_required_karma
+from .karma_models import add_karma, has_required_karma, KarmaActionType
 
 router = APIRouter(prefix="/api/v1", tags=["Events"])
 
 
+CHECKIN_RADIUS_METERS = 200  # user must be within 200m of event location
 
-CHECKIN_RADIUS_METERS = 200  
 
 
 class CreateEventRequest(BaseModel):
@@ -53,7 +53,8 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     """
     Calculate distance in meters between two GPS coordinates.
     """
-    R = 6_371_000
+    R = 6_371_000  # Earth radius in meters
+
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     d_phi = math.radians(lat2 - lat1)
@@ -75,6 +76,7 @@ async def create_event(body: CreateEventRequest):
     Creates an event and awards HOST_EVENT karma to the host.
     """
 
+    # Check host exists
     host_row = await db_manager.pg_pool.fetchrow(
         "SELECT user_id FROM users WHERE user_id = $1",
         body.host_id
@@ -108,8 +110,7 @@ async def create_event(body: CreateEventRequest):
         body.longitude,
     )
 
-   
-    await add_karma(body.host_id, "HOST_EVENT", event_id=event_id)
+    await add_karma(body.host_id, KarmaActionType.HOST_EVENT, reference_id=event_id)
 
     return {
         "event_id": event_id,
@@ -117,7 +118,6 @@ async def create_event(body: CreateEventRequest):
         "host_id": body.host_id,
         "message": "Event created successfully. HOST_EVENT karma awarded.",
     }
-
 
 
 
@@ -149,7 +149,6 @@ async def list_events(limit: int = 20, offset: int = 0):
 
 
 
-
 @router.get(
     "/events/{event_id}",
     summary="Get event details including participant count",
@@ -177,7 +176,7 @@ async def get_event(event_id: str):
             detail=f"Event '{event_id}' not found."
         )
 
-
+    # Count confirmed participants
     count_row = await db_manager.pg_pool.fetchrow(
         """
         SELECT COUNT(*) as participant_count
@@ -191,7 +190,6 @@ async def get_event(event_id: str):
     event["participant_count"] = count_row["participant_count"]
 
     return event
-
 
 
 
@@ -210,7 +208,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
     5. Insert participant + award EVENT_RSVP karma
     """
 
-
+    # Fetch event
     event = await db_manager.pg_pool.fetchrow(
         "SELECT * FROM events WHERE event_id = $1",
         event_id
@@ -221,7 +219,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
             detail=f"Event '{event_id}' not found."
         )
 
-    
+    # Check user exists
     user_row = await db_manager.pg_pool.fetchrow(
         "SELECT user_id FROM users WHERE user_id = $1",
         body.user_id
@@ -232,12 +230,12 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
             detail=f"User '{body.user_id}' not found."
         )
 
-
+    # Check karma gate
     if event["min_karma_required"] > 0:
         eligible = await has_required_karma(body.user_id, event["min_karma_required"])
         if not eligible:
             user_karma = await db_manager.pg_pool.fetchrow(
-                "SELECT karma_points FROM users WHERE user_id = $1",
+                "SELECT karma_score FROM users WHERE user_id = $1",
                 body.user_id
             )
             raise HTTPException(
@@ -245,7 +243,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
                 detail=(
                     f"Not enough karma. "
                     f"Required: {event['min_karma_required']}, "
-                    f"You have: {user_karma['karma_points']}."
+                    f"You have: {user_karma['karma_score']}."
                 )
             )
 
@@ -261,7 +259,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
                 detail="Event is fully booked."
             )
 
-  
+    # Check already RSVP'd
     existing = await db_manager.pg_pool.fetchrow(
         "SELECT id FROM event_participants WHERE event_id = $1 AND user_id = $2",
         event_id,
@@ -273,7 +271,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
             detail="You have already RSVP'd to this event."
         )
 
-  
+    # Insert participant
     payment_status = "pending" if event["entry_fee"] > 0 else "paid"
 
     await db_manager.pg_pool.execute(
@@ -286,8 +284,7 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
         payment_status,
     )
 
-    # Award EVENT_RSVP karma
-    await add_karma(body.user_id, "EVENT_RSVP", event_id=event_id)
+    await add_karma(body.user_id, KarmaActionType.EVENT_RSVP, reference_id=event_id)
 
     return {
         "event_id": event_id,
@@ -295,8 +292,6 @@ async def rsvp_event(event_id: str, body: RSVPRequest):
         "payment_status": payment_status,
         "message": "RSVP successful. EVENT_RSVP karma awarded.",
     }
-
-
 
 
 @router.post(
@@ -313,7 +308,7 @@ async def checkin_event(event_id: str, body: CheckinRequest):
     4. Mark attendance + award GPS_CHECKIN karma
     """
 
-
+    # Fetch event
     event = await db_manager.pg_pool.fetchrow(
         "SELECT * FROM events WHERE event_id = $1",
         event_id
@@ -324,13 +319,14 @@ async def checkin_event(event_id: str, body: CheckinRequest):
             detail=f"Event '{event_id}' not found."
         )
 
+    # Check event has GPS coordinates
     if event["latitude"] is None or event["longitude"] is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This event does not have a GPS location set. Check-in not available."
         )
 
-   
+    # Check user has RSVP'd
     participant = await db_manager.pg_pool.fetchrow(
         """
         SELECT id, attendance_status
@@ -346,7 +342,7 @@ async def checkin_event(event_id: str, body: CheckinRequest):
             detail="You must RSVP before checking in."
         )
 
-  
+    # Check already checked in
     if participant["attendance_status"]:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -368,7 +364,7 @@ async def checkin_event(event_id: str, body: CheckinRequest):
             )
         )
 
-   
+    # Mark attendance
     await db_manager.pg_pool.execute(
         """
         UPDATE event_participants
@@ -379,7 +375,7 @@ async def checkin_event(event_id: str, body: CheckinRequest):
         body.user_id,
     )
 
-    await add_karma(body.user_id, "GPS_CHECKIN", event_id=event_id)
+    await add_karma(body.user_id, KarmaActionType.GPS_CHECKIN, reference_id=event_id)
 
     return {
         "event_id": event_id,

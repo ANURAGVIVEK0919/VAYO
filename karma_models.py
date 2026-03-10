@@ -1,5 +1,5 @@
 """
-Karma Module
+Karma Models
 Contains:
 - Pydantic Models & Enums
 - Tier Calculation
@@ -13,20 +13,24 @@ from enum import Enum
 from .database import db_manager
 
 
-
 class KarmaActionType(str, Enum):
+    # Signup actions
     SIGNUP_EMAIL_VERIFY     = "SIGNUP_EMAIL_VERIFY"
     SIGNUP_PROFILE_PHOTO    = "SIGNUP_PROFILE_PHOTO"
     SIGNUP_VIBE_QUESTIONS   = "SIGNUP_VIBE_QUESTIONS"
     SIGNUP_CLAIM_ID         = "SIGNUP_CLAIM_ID"
+    # Event actions
     EVENT_RSVP              = "EVENT_RSVP"
     GPS_CHECKIN             = "GPS_CHECKIN"
     EVENT_PHOTO_POST        = "EVENT_PHOTO_POST"
+    EVENT_HIGH_RATING       = "EVENT_HIGH_RATING"
     PEER_ENDORSEMENT        = "PEER_ENDORSEMENT"
     HOST_EVENT              = "HOST_EVENT"
+    # Penalties
     NO_SHOW_PENALTY         = "NO_SHOW_PENALTY"
     HOST_CANCEL_PENALTY     = "HOST_CANCEL_PENALTY"
     NEGATIVE_REVIEW_PENALTY = "NEGATIVE_REVIEW_PENALTY"
+    # Admin
     ADMIN_ADJUSTMENT        = "ADMIN_ADJUSTMENT"
 
 
@@ -47,29 +51,43 @@ TIER_CONFIG = {
 
 
 
+KARMA_RULES: Dict[KarmaActionType, int] = {
+    KarmaActionType.SIGNUP_EMAIL_VERIFY:      10,
+    KarmaActionType.SIGNUP_PROFILE_PHOTO:     10,
+    KarmaActionType.SIGNUP_VIBE_QUESTIONS:    20,
+    KarmaActionType.SIGNUP_CLAIM_ID:          10,
+    KarmaActionType.EVENT_RSVP:               10,
+    KarmaActionType.GPS_CHECKIN:              20,
+    KarmaActionType.EVENT_PHOTO_POST:         15,
+    KarmaActionType.EVENT_HIGH_RATING:        15,
+    KarmaActionType.PEER_ENDORSEMENT:         25,
+    KarmaActionType.HOST_EVENT:               50,
+    KarmaActionType.NO_SHOW_PENALTY:         -20,
+    KarmaActionType.HOST_CANCEL_PENALTY:     -30,
+    KarmaActionType.NEGATIVE_REVIEW_PENALTY: -15,
+}
+
+PENALTY_ACTIONS = {
+    KarmaActionType.NO_SHOW_PENALTY,
+    KarmaActionType.HOST_CANCEL_PENALTY,
+    KarmaActionType.NEGATIVE_REVIEW_PENALTY,
+}
+
+
 def compute_tier(score: int) -> Optional[KarmaTier]:
-    """Maps a karma score to a tier. Returns None if score < 100."""
-    if score >= 1000:
-        return KarmaTier.CONQUEROR
-    elif score >= 500:
-        return KarmaTier.EXPLORER
-    elif score >= 300:
-        return KarmaTier.PATHFINDER
-    elif score >= 100:
-        return KarmaTier.BEGINNER
+    """Maps a karma score to a tier dynamically from TIER_CONFIG. Returns None if score < 100."""
+    for tier, config in TIER_CONFIG.items():
+        if score >= config["min"] and (config["max"] is None or score <= config["max"]):
+            return tier
     return None
 
 
 def get_next_tier_threshold(score: int) -> Optional[int]:
-    """Returns the point threshold for the next tier, or None if at max."""
-    if score < 100:
-        return 100
-    elif score < 300:
-        return 300
-    elif score < 500:
-        return 500
-    elif score < 1000:
-        return 1000
+    """Returns the point threshold for the next tier. Derived dynamically from TIER_CONFIG."""
+    thresholds = sorted([v["min"] for v in TIER_CONFIG.values()])
+    for t in thresholds:
+        if score < t:
+            return t
     return None
 
 
@@ -78,6 +96,7 @@ def get_tier_level(tier: Optional[KarmaTier]) -> int:
     if tier is None:
         return 0
     return TIER_CONFIG[tier]["level"]
+
 
 
 class KarmaAwardRequest(BaseModel):
@@ -91,14 +110,9 @@ class KarmaAwardRequest(BaseModel):
     @classmethod
     def validate_point_delta(cls, v: int, info) -> int:
         action = info.data.get("action_type")
-        penalty_actions = {
-            KarmaActionType.NO_SHOW_PENALTY,
-            KarmaActionType.HOST_CANCEL_PENALTY,
-            KarmaActionType.NEGATIVE_REVIEW_PENALTY,
-        }
-        if action in penalty_actions and v > 0:
+        if action in PENALTY_ACTIONS and v > 0:
             raise ValueError(f"Penalty action '{action}' must have a negative point_delta")
-        if action and action not in penalty_actions and action != KarmaActionType.ADMIN_ADJUSTMENT and v < 0:
+        if action and action not in PENALTY_ACTIONS and action != KarmaActionType.ADMIN_ADJUSTMENT and v < 0:
             raise ValueError(f"Reward action '{action}' must have a positive point_delta")
         return v
 
@@ -152,110 +166,110 @@ class MessageEligibilityResponse(BaseModel):
     target_inbox_shield: int
 
 
-
-async def add_karma(user_id: str, action_type: str, event_id: str = None):
+async def add_karma(
+    user_id: str,
+    action_type: KarmaActionType,
+    reference_id: str = None
+):
     """
     Add or deduct karma for a user.
+    Inserts into karma_ledger — trigger auto-updates karma_score on users table.
     Raises ValueError if user does not exist.
     """
 
-    user_row = await db_manager.pg_pool.fetchrow(
-        "SELECT user_id FROM users WHERE user_id = $1",
-        user_id
-    )
-    if user_row is None:
-        raise ValueError(
-            f"User '{user_id}' not found in users table. "
-            f"Insert the user before adding karma."
-        )
+    # Support both raw string and enum input
+    if isinstance(action_type, str):
+        action_type = KarmaActionType(action_type.upper())
 
+    point_delta = KARMA_RULES.get(action_type)
 
-    karma_rules = {
-        "SIGNUP_EMAIL_VERIFY":     10,
-        "SIGNUP_PROFILE_PHOTO":    10,
-        "SIGNUP_VIBE_QUESTIONS":   20,
-        "SIGNUP_CLAIM_ID":         10,
-        "EVENT_RSVP":              10,
-        "GPS_CHECKIN":             20,
-        "EVENT_PHOTO_POST":        15,
-        "PEER_ENDORSEMENT":        25,
-        "HOST_EVENT":              50,
-        "NO_SHOW_PENALTY":        -20,
-        "HOST_CANCEL_PENALTY":    -30,
-        "NEGATIVE_REVIEW_PENALTY": -15,
-    }
-
-    action_key = action_type.upper() if isinstance(action_type, str) else action_type
-    points = karma_rules.get(action_key, 0)
-
-    if points == 0:
+    if point_delta is None:
+        # ADMIN_ADJUSTMENT has no fixed rule
         return
 
-    await db_manager.pg_pool.execute(
-        """
-        INSERT INTO karma_transactions (user_id, action_type, points, event_id)
-        VALUES ($1, $2, $3, $4)
-        """,
-        user_id,
-        action_key,
-        points,
-        event_id
-    )
+    async with db_manager.pg_pool.acquire() as conn:
+        async with conn.transaction():
 
-    await db_manager.pg_pool.execute(
-        """
-        UPDATE users
-        SET karma_points = GREATEST(0, karma_points + $1)
-        WHERE user_id = $2
-        """,
-        points,
-        user_id
-    )
+            # Check user exists
+            user_row = await conn.fetchrow(
+                "SELECT user_id FROM users WHERE user_id = $1",
+                user_id
+            )
+            if not user_row:
+                raise ValueError(
+                    f"User '{user_id}' not found in users table. "
+                    f"Insert the user before adding karma."
+                )
 
-   
-    row = await db_manager.pg_pool.fetchrow(
-        "SELECT karma_points FROM users WHERE user_id = $1",
-        user_id
-    )
-    tier = compute_tier(row["karma_points"])
+            # Insert into karma_ledger
+            # Trigger automatically updates karma_score on users table
+            await conn.execute(
+                """
+                INSERT INTO karma_ledger (user_id, action_type, point_delta, reference_id)
+                VALUES ($1, $2, $3, $4)
+                """,
+                user_id,
+                action_type.value,
+                point_delta,
+                reference_id
+            )
 
-    await db_manager.pg_pool.execute(
-        """
-        UPDATE users
-        SET tier_level = $1
-        WHERE user_id = $2
-        """,
-        tier.value if tier else None,
-        user_id
-    )
+            # Enforce karma floor at 0
+            await conn.execute(
+                """
+                UPDATE users
+                SET karma_score = GREATEST(0, karma_score)
+                WHERE user_id = $1
+                """,
+                user_id
+            )
+
+            # Update tier
+            row = await conn.fetchrow(
+                "SELECT karma_score FROM users WHERE user_id = $1",
+                user_id
+            )
+            tier = compute_tier(row["karma_score"])
+            await conn.execute(
+                """
+                UPDATE users SET tier_level = $1 WHERE user_id = $2
+                """,
+                tier.value if tier else None,
+                user_id
+            )
 
 
 async def get_user_karma(user_id: str) -> int:
     """
-    Get total karma points of a user.
+    Get total karma score of a user.
     Returns 0 if user not found.
     """
     row = await db_manager.pg_pool.fetchrow(
-        "SELECT karma_points FROM users WHERE user_id = $1",
+        "SELECT karma_score FROM users WHERE user_id = $1",
         user_id
     )
-    if row:
-        return row["karma_points"]
-    return 0
+    return row["karma_score"] if row else 0
 
 
-async def get_karma_history(user_id: str) -> List[Dict]:
+async def get_karma_history(
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0
+) -> List[Dict]:
     """
-    Returns user's karma transaction history.
+    Returns user's karma ledger history with pagination.
     """
     rows = await db_manager.pg_pool.fetch(
         """
-        SELECT id, action_type, points, event_id, created_at
-        FROM karma_transactions
+        SELECT id, action_type, point_delta, reference_id, created_at
+        FROM karma_ledger
         WHERE user_id = $1
         ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
         """,
-        user_id
+        user_id,
+        limit,
+        offset
     )
     return [dict(r) for r in rows]
 
@@ -264,5 +278,13 @@ async def has_required_karma(user_id: str, required_karma: int) -> bool:
     """
     Check if user has enough karma for an event.
     """
-    karma = await get_user_karma(user_id)
-    return karma >= required_karma
+    row = await db_manager.pg_pool.fetchrow(
+        """
+        SELECT karma_score >= $2 AS allowed
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id,
+        required_karma
+    )
+    return row["allowed"] if row else False
