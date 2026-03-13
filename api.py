@@ -20,10 +20,11 @@ from matching_system.karma_router import router as karma_router
 from matching_system.events_router import router as events_router
 from matching_system.ratings_router import router as ratings_router
 from matching_system.leaderboard_router import router as leaderboard_router
-
+from matching_system.chat_router import router as chat_router
 
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,8 +33,6 @@ async def lifespan(app: FastAPI):
     yield
     await db_manager.close()
 
-
-
 app = FastAPI(
     title="AI-Powered Community Matching System v2.0",
     description="Intelligent onboarding with <2s matching using hybrid algorithms",
@@ -41,15 +40,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ← ALL routers MUST come after app = FastAPI(...)
 app.include_router(karma_router)
 app.include_router(events_router)
 app.include_router(ratings_router)
 app.include_router(leaderboard_router)
+app.include_router(chat_router)
 
-# --------------------------------------------------
-# CORS
-# --------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +54,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.post(
     "/api/v1/match",
@@ -75,6 +72,7 @@ async def initiate_match(profile: UserProfileInput):
         estimated_time_ms=2000,
         websocket_channel=f"match_updates_{profile.user_id}",
     )
+
 
 @app.get("/api/v1/match/{task_id}")
 async def get_match_result(task_id: str):
@@ -96,7 +94,6 @@ async def get_match_result(task_id: str):
 
     return {"task_id": task_id, "status": task_result.state.lower()}
 
-
 @app.get("/api/v1/health")
 async def health_check():
     return {
@@ -105,6 +102,8 @@ async def health_check():
         "pinecone": "connected" if db_manager.pinecone_index else "disconnected",
         "redis": "connected"
     }
+
+
 
 @app.get("/api/v1/popular-communities")
 async def get_popular_communities(limit: int = 10):
