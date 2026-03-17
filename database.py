@@ -30,6 +30,7 @@ class DatabaseManager:
         )
         
     def initialize_pinecone(self):
+        return  # Temporarily disabled
         """Initialize Pinecone vector database"""
         api_key = os.getenv("PINECONE_API_KEY")
         self.pinecone_client = Pinecone(api_key=api_key)
@@ -350,3 +351,4 @@ class DatabaseManager:
 
 # Global instance
 db_manager = DatabaseManager()
+
