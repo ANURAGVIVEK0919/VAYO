@@ -21,6 +21,9 @@ from matching_system.events_router import router as events_router
 from matching_system.ratings_router import router as ratings_router
 from matching_system.leaderboard_router import router as leaderboard_router
 from matching_system.chat_router import router as chat_router
+from matching_system.connections_router import router as connections_router
+from matching_system.discovery_router import router as discovery_router
+from matching_system.status_router import router as status_router
 
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -32,6 +35,7 @@ async def lifespan(app: FastAPI):
     db_manager.initialize_pinecone()
     yield
     await db_manager.close()
+
 
 app = FastAPI(
     title="AI-Powered Community Matching System v2.0",
@@ -45,6 +49,9 @@ app.include_router(events_router)
 app.include_router(ratings_router)
 app.include_router(leaderboard_router)
 app.include_router(chat_router)
+app.include_router(connections_router)
+app.include_router(discovery_router)
+app.include_router(status_router)
 
 
 app.add_middleware(
@@ -94,6 +101,7 @@ async def get_match_result(task_id: str):
 
     return {"task_id": task_id, "status": task_result.state.lower()}
 
+
 @app.get("/api/v1/health")
 async def health_check():
     return {
@@ -102,7 +110,6 @@ async def health_check():
         "pinecone": "connected" if db_manager.pinecone_index else "disconnected",
         "redis": "connected"
     }
-
 
 
 @app.get("/api/v1/popular-communities")
