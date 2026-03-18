@@ -1,6 +1,6 @@
 # AI-Powered Community Matching System v2.0
 
-Intelligent onboarding solution with **<2 second** community matching using hybrid algorithms, a **reputation-based karma system**, and **real-time WebSocket** delivery.
+Intelligent onboarding solution with **<2 second** community matching using hybrid algorithms, a **reputation-based karma system**, **real-time WebSocket** delivery, and a full **social networking layer** (connections, discovery, events, chat).
 
 ## Architecture
 
@@ -62,7 +62,7 @@ Post-onboarding karma is tied to real-world event participation. Growth intentio
 | GPS check-in at event | +25 | Max 1/event |
 | Post photo/update to event feed | +15 | Max 2/event |
 | Verified Vibe peer endorsement | +20 | No daily cap |
-| Host a community event | TBD | Per event |
+| Host a community event | +30 | Per event |
 
 ### Communication Rules
 
@@ -97,20 +97,148 @@ CREATE TABLE karma_ledger (
 
 ---
 
+## Karma Connect (Connections System)
+
+Full social networking layer — follow requests, connections, blocking, reporting, muting, privacy settings, and social handle sharing.
+
+### Connection Flow
+
+```mermaid
+graph TD
+    A[User A sends Karma Connect request] --> B{Tier Check}
+    B -->|Pass| C{Already Connected?}
+    B -->|Fail| D[403 Forbidden]
+    C -->|No| E{Blocked?}
+    C -->|Yes| F[409 Conflict]
+    E -->|No| G[Request Created — pending]
+    E -->|Yes| H[403 Blocked]
+    G --> I[User B accepts/declines]
+    I -->|Accept| J[Connection created — Chat unlocked]
+    I -->|Decline| K[Request declined]
+```
+
+### Connections API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/connect/request` | Send a Karma Connect request |
+| `PATCH` | `/api/v1/connect/request/{id}/accept` | Accept a request |
+| `PATCH` | `/api/v1/connect/request/{id}/decline` | Decline a request |
+| `DELETE` | `/api/v1/connect/request/{id}/withdraw` | Withdraw a pending request |
+| `GET` | `/api/v1/connect/requests/{user_id}` | List pending requests |
+| `GET` | `/api/v1/connect/connections/{user_id}` | List all connections |
+| `GET` | `/api/v1/connect/mutual/{uid_1}/{uid_2}` | Mutual connections |
+| `GET` | `/api/v1/connect/profile/{user_id}` | View profile (privacy-aware) |
+| `DELETE` | `/api/v1/connect/remove` | Remove a connection |
+| `POST` | `/api/v1/connect/block` | Block a user |
+| `DELETE` | `/api/v1/connect/unblock` | Unblock a user |
+| `GET` | `/api/v1/connect/blocked/{user_id}` | List blocked users |
+| `POST` | `/api/v1/connect/report` | Report a user |
+| `POST` | `/api/v1/connect/mute` | Mute a user |
+| `DELETE` | `/api/v1/connect/unmute` | Unmute a user |
+| `PATCH` | `/api/v1/connect/privacy/{user_id}` | Update privacy settings |
+| `POST` | `/api/v1/connect/share` | Share social handle |
+| `DELETE` | `/api/v1/connect/share` | Remove shared detail |
+| `GET` | `/api/v1/connect/shared/{user_id}` | Get shared handles |
+
+### Privacy Settings
+
+| Setting | Options | Default |
+|---------|---------|---------|
+| `profile_visibility` | `public`, `connections`, `hidden` | `public` |
+| `show_karma_score` | `true` / `false` | `true` |
+| `show_last_seen` | `true` / `false` | `true` |
+
+### Social Sharing Rules
+- Only **Instagram**, **LinkedIn**, **Twitter** handles can be shared — no phone or email
+- Sharing requires an existing connection
+- Each handle can be updated or removed individually
+
+---
+
+## Discovery — Find People Nearby
+
+Location-based user discovery with karma tier filtering, GPS and city-based search modes.
+
+### Discovery API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/discover/{user_id}` | Discover people nearby |
+
+### Two Search Modes
+
+| Mode | Parameters | Example |
+|------|-----------|---------|
+| **GPS (auto)** | `lat`, `lng`, `radius` (default 5km) | `/discover/user_001?lat=12.97&lng=77.59&radius=5` |
+| **City (manual)** | `city` | `/discover/user_001?city=Mumbai` |
+
+### Discovery Filters
+- **Tier reach** — higher tiers see lower tiers (Conqueror sees all, Beginner sees only Beginner)
+- **Excludes** — already connected users, blocked users, self
+- **Privacy** — hidden profiles excluded, `show_karma_score` respected
+- **Sorting** — karma score descending
+- **Limit** — configurable, default 20 results
+
+---
+
+## Events System
+
+Create, list, RSVP, and GPS check-in for community events — fully integrated with the karma system.
+
+### Events API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/events` | Create event (awards HOST_EVENT karma) |
+| `GET` | `/api/v1/events` | List upcoming events |
+| `GET` | `/api/v1/events/{event_id}` | Get event details + participant count |
+| `POST` | `/api/v1/events/{event_id}/rsvp` | RSVP to event (awards EVENT_RSVP karma) |
+| `POST` | `/api/v1/events/{event_id}/checkin` | GPS check-in (awards GPS_CHECKIN karma) |
+
+### RSVP Flow
+1. Verify event exists and user exists
+2. Check karma gate (`min_karma_required`)
+3. Check event capacity (`max_participants`)
+4. Check duplicate RSVP
+5. Insert participant → award `EVENT_RSVP` karma
+
+### GPS Check-in
+- User must be **within 200m** of the event location (Haversine formula)
+- Must have RSVP'd before checking in
+- Awards `GPS_CHECKIN` karma on success
+
+---
+
+## Chat System
+
+Karma-gated direct messaging with real-time delivery via Redis Pub/Sub. All endpoints require Clerk JWT authentication.
+
+### Chat API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/chat/send` | Send a DM (karma outbound rule + inbox shield enforced) |
+| `GET` | `/api/v1/chat/conversations/{user_id}` | List conversations with latest message and unread count |
+| `GET` | `/api/v1/chat/{user_id}/{other_user_id}` | Paginated conversation history between two users |
+| `PATCH` | `/api/v1/chat/{message_id}/read` | Mark a message as read (receiver only) |
+
+---
+
 ## Quick Start
 
 ### 1. Installation
 
 ```bash
 # Clone repository
-git clone <repo_url>
-cd matching_system
+git clone https://github.com/TanishqMishra12/VAYO.git
+cd VAYO
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r matching_system/requirements.txt
 
 # Configure environment
-cp .env.example .env
+cp matching_system/.env.example matching_system/.env
 # Edit .env with your API keys
 ```
 
@@ -120,17 +248,13 @@ cp .env.example .env
 # Create database
 psql -c "CREATE DATABASE community_matching;"
 
-# Run base schema
+# Run migrations in order
 psql -d community_matching -f matching_system/setup_database.sql
-
-# Run Clerk integration migration
 psql -d community_matching -f matching_system/clerk_migration.sql
-
-# Run user preferences migration
 psql -d community_matching -f matching_system/user_preferences_migration.sql
-
-# Run karma points migration
 psql -d community_matching -f matching_system/karma_migration.sql
+psql -d community_matching -f matching_system/chat_migration.sql
+psql -d community_matching -f matching_system/Inchat.sql
 ```
 
 ### 3. Start Services
@@ -189,6 +313,13 @@ python -m matching_system.test_karma
 
 # Integration tests (requires running server + database)
 python -m matching_system.test_karma --live
+```
+
+### 5. Seed Vector Embeddings
+
+```bash
+# Seed community embeddings into Pinecone
+python -m matching_system.seed_vectors
 ```
 
 ---
@@ -264,36 +395,6 @@ REDIS_HOST=localhost
 API_PORT=8000
 ```
 
-## Code Structure
-
-```
-matching_system/
-├── api.py                    # FastAPI endpoints + router registration
-├── karma.py                  # Karma points API routes
-├── karma_models.py           # Karma enums, tier logic, Pydantic schemas
-├── karma_migration.sql       # Karma ledger table + trigger migration
-├── websocket_server.py       # WebSocket + Redis Pub/Sub
-├── celery_tasks.py           # process_match_task (main logic)
-├── models.py                 # Matching system Pydantic schemas
-├── database.py               # PostgreSQL + Pinecone + Karma DB methods
-├── ai_services.py            # OpenAI integration
-├── cache.py                  # Redis caching
-├── dependencies.py           # Clerk JWT auth dependency
-├── preferences.py            # User onboarding preferences
-├── webhooks.py               # Clerk webhook handlers
-├── test_karma.py             # Karma unit + integration tests
-├── test_example.py           # Matching system tests
-├── test_websocket_client.py  # WebSocket tests
-├── setup_database.sql        # Base schema
-├── clerk_migration.sql       # Clerk auth migration
-├── user_preferences_migration.sql  # Preferences migration
-├── static/
-│   └── websocket_demo.html   # Interactive demo
-├── requirements.txt          # Dependencies
-├── WEBSOCKET_GUIDE.md        # WebSocket documentation
-└── .env.example              # Config template
-```
-
 ## Database Migrations (Run Order)
 
 Migrations must be run in order. Each is idempotent and wrapped in a transaction.
@@ -304,6 +405,8 @@ Migrations must be run in order. Each is idempotent and wrapped in a transaction
 | 2 | `clerk_migration.sql` | Add Clerk auth columns (email, first_name, last_name, etc.) to users |
 | 3 | `user_preferences_migration.sql` | user_preferences table with ENUM types for onboarding |
 | 4 | `karma_migration.sql` | karma_ledger table, action ENUM, trigger for denormalized score, inbox shield |
+| 5 | `chat_migration.sql` | messages table with conversation indexes and unread tracking |
+| 6 | `Inchat.sql` | Connections (follow_requests, connections, blocked/reported/muted users, shared_details), privacy columns, discovery columns, chat messages table |
 
 ## Troubleshooting
 
@@ -324,6 +427,16 @@ Migrations must be run in order. Each is idempotent and wrapped in a transaction
 - Verify the migration was run: `\d karma_ledger` in psql
 - Check that the trigger exists: `SELECT tgname FROM pg_trigger WHERE tgrelid = 'karma_ledger'::regclass;`
 - Ensure the user exists in the `users` table before awarding karma
+
+### Connections not working
+- Ensure `Inchat.sql` migration was run (creates follow_requests, connections, blocked_users tables)
+- Verify both users exist in the `users` table
+- Check tier levels — lower tiers cannot connect with higher tiers
+
+### Discovery returns empty
+- Ensure users have `latitude`/`longitude` (GPS mode) or `city` (manual mode) set
+- Check that the `Inchat.sql` migration added the `region`, `latitude`, `longitude` columns
+- Verify `profile_visibility` is not set to `hidden` for target users
 
 ## License
 
