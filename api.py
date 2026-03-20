@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from celery.result import AsyncResult
 
-from matching_system.celery_tasks import celery_app, process_match_task
+from .celery_tasks import celery_app, process_match_task
 from .models import (
     UserProfileInput,
     TaskStatusResponse,
@@ -24,6 +24,10 @@ from matching_system.chat_router import router as chat_router
 from matching_system.connections_router import router as connections_router
 from matching_system.discovery_router import router as discovery_router
 from matching_system.status_router import router as status_router
+from .karma_router import router as karma_router
+from .events_router import router as events_router
+from .splits_router import router as splits_router
+from .upi_router import router as upi_router
 
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -63,11 +67,22 @@ app.add_middleware(
 )
 
 
-@app.post(
-    "/api/v1/match",
-    response_model=TaskStatusResponse,
-    status_code=202
-)
+# ALL routers MUST come after app = FastAPI(...)
+app.include_router(karma_router)
+app.include_router(events_router)
+
+# Splits router
+app.include_router(splits_router)
+app.include_router(upi_router)
+
+# Mount static files for demo
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.post("/api/v1/match", response_model=TaskStatusResponse, status_code=202)
 async def initiate_match(profile: UserProfileInput):
     task = process_match_task.apply_async(
         kwargs={"user_data": profile.dict()},
@@ -116,3 +131,4 @@ async def health_check():
 async def get_popular_communities(limit: int = 10):
     communities = await db_manager.get_popular_communities(limit=limit)
     return {"communities": communities}
+

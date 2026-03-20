@@ -1,0 +1,12 @@
+# Use this workspace to collaborate
+workspace:
+  id: 7ef1a720-636c-4991-89da-6d556539b82e
+cloudResources:
+  collections:
+    ..\postman\collections\VAYO Splitwise Demo: 38449962-dbf63931-6e87-47ab-a083-b340ff96b0c6
+
+# All resources in the `postman/` folder are automatically registered in Local View.
+# Point to additional files outside the `postman/` folder to register them individually. Example:
+#localResources:
+#  collections:
+#    - ../tests/E2E Test Collection/

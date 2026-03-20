@@ -30,6 +30,7 @@ class DatabaseManager:
         )
         
     def initialize_pinecone(self):
+        return  # Temporarily disabled
         """Initialize Pinecone vector database"""
         api_key = os.getenv("PINECONE_API_KEY")
         self.pinecone_client = Pinecone(api_key=api_key)
@@ -97,7 +98,7 @@ class DatabaseManager:
         Phase 2: Cosine similarity search on filtered subset
         Returns top_k matches with scores
         """
-        # Filter parameter restricts search to pre-filtered community IDs
+       
         results = self.pinecone_index.query(
             vector=query_vector,
             top_k=top_k,
@@ -317,6 +318,37 @@ class DatabaseManager:
         if self.pg_pool:
             await self.pg_pool.close()
 
+    def save_user_vector_to_pinecone(
+        self,
+        user_id: str,
+        vector: List[float]
+    ) -> None:
+        """Save user embedding vector to Pinecone permanently."""
+        self.pinecone_index.upsert(
+            vectors=[{
+                "id": f"user_{user_id}",
+                "values": vector,
+                "metadata": {
+                    "user_id": user_id,
+                    "type": "user_vector"
+                }
+            }]
+        )
+
+    def get_user_vector_from_pinecone(
+        self,
+        user_id: str
+    ) -> Optional[List[float]]:
+        """Fetch user vector from Pinecone. Returns None if not found."""
+        result = self.pinecone_index.fetch(
+            ids=[f"user_{user_id}"]
+        )
+        vectors = result.vectors
+        if f"user_{user_id}" in vectors:
+            return vectors[f"user_{user_id}"].values
+        return None
+
 
 # Global instance
 db_manager = DatabaseManager()
+
